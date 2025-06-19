@@ -1,131 +1,146 @@
 import os
+import json
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
-from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_community.vectorstores import FAISS
+from backend.utils.chatbot_setup import setup_chatbot, generate_prompt_with_history
 from langchain.memory import ConversationBufferMemory
-from langchain.schema import SystemMessage, HumanMessage, AIMessage
+from langchain.schema import HumanMessage
+from langchain_openai import ChatOpenAI
+from fastapi.middleware.cors import CORSMiddleware
 
-# Configurar API Key
+# Cargar claves y entorno
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Memoria global para mantener el historial de conversación
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+app = FastAPI()
 
-def setup_chatbot(pdf_path):
-    # 1. Cargar y dividir el PDF
-    loader = PyPDFLoader(pdf_path)
-    documents = loader.load()
-    
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
-        separators=["\n\n", "\n", ".", " ", ""]
-    )
-    chunks = text_splitter.split_documents(documents)
-    
-    # 2. Crear base de datos vectorial
-    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-    vector_db = FAISS.from_documents(chunks, embeddings)
-    
-    # 3. Configurar sistema de recuperación
-    retriever = vector_db.as_retriever(search_kwargs={"k": 3})
-    
-    # 4. Guardar contenido inicial para preguntas meta
-    intro_content = "\n".join([doc.page_content for doc in documents[:2]])[:1500]
-    
-    return retriever, intro_content
+# Habilitar CORS para desarrollo
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def generate_prompt_with_history(user_input, context=None, intro_content=None):
-    # Obtener historial de conversación
-    history = memory.load_memory_variables({})["chat_history"]
-    
-    # Construir mensajes de sistema con reglas estrictas
-    system_content = (
-        "Eres un asistente experto. Sigue estas reglas estrictamente:\n"
-        "1. Responde saludos y preguntas generales de forma natural pero breve\n"
-        "2. Para cualquier pregunta técnica o específica, usa SOLO la información del contexto proporcionado\n"
-        "3. Si el contexto no contiene información relevante, responde: 'No tengo información sobre eso'\n"
-        "4. Nunca menciones que tienes un documento, PDF o fuente externa\n"
-        "5. Nunca inventes información que no esté en el contexto\n"
-        "6. Para preguntas sobre tu conocimiento o alcance, usa la información introductoria\n"
-        "7. Mantén un tono profesional y amable\n"
-        "8. Considera el historial de conversación para dar respuestas coherentes"
-    )
-    
-    messages = [SystemMessage(content=system_content)]
-    
-    # Agregar historial de conversación
-    for msg in history:
-        if isinstance(msg, HumanMessage):
-            messages.append(HumanMessage(content=msg.content))
-        elif isinstance(msg, AIMessage):
-            messages.append(AIMessage(content=msg.content))
-    
-    # Manejar preguntas meta sobre el conocimiento
-    if any(keyword in user_input.lower() for keyword in ["sobre qué tienes", "qué sabes", "alcance", "temas", "información tienes"]):
-        messages.append(HumanMessage(
-            content=f"Información introductoria: {intro_content}\n\nPregunta: {user_input}"
-        ))
-    # Manejar otras preguntas
-    elif context:
-        messages.append(HumanMessage(
-            content=f"Información relevante: {context}\n\nPregunta: {user_input}"
-        ))
+# Cargar conocimiento al iniciar
+pdf_path = os.path.join("backend", "docs", "PB_TravelAbility_DI-v3.pdf")
+retriever, intro_content = setup_chatbot(pdf_path)
+
+# Manejo de sesiones
+sessions = {}  # { conversation_id: ConversationBufferMemory }
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+@app.post("/chat")
+async def chat(request: Request):
+    body = await request.json()
+    user_input = body.get("message", "")
+    conversation_id = body.get("conversation_id", "default")
+
+    print(f"📨 Petición recibida — conversation_id: {conversation_id}")
+    print(f"🗣️ Mensaje del usuario: {user_input}")
+
+    # Saludo directo
+    if user_input.strip().lower() in ["hola", "buenas", "hey", "hi"]:
+        print("👋 Respuesta automática a saludo.")
+        return StreamingResponse(
+            iter([
+                f"data: {json.dumps({'type': 'content', 'content': '¡Hola! Puedes preguntarme sobre el contenido del documento y con gusto te ayudaré.'})}\n\n",
+                'data: {"type": "done"}\n\n'
+            ]),
+            media_type="text/event-stream"
+        )
+
+    # Obtener o crear memoria para esta sesión
+    if conversation_id not in sessions:
+        print(f"🧠 Nueva sesión creada para: {conversation_id}")
+        sessions[conversation_id] = ConversationBufferMemory(
+            memory_key="chat_history", return_messages=True
+        )
     else:
-        messages.append(HumanMessage(
-            content=f"No hay información relevante disponible\n\nPregunta: {user_input}"
-        ))
-    
-    return messages
+        print(f"📂 Sesión existente usada para: {conversation_id}")
 
-def main():
-    # Usar ruta segura multiplataforma
-    pdf_path = os.path.join("backend", "docs", "PB_TravelAbility_DI-v3.pdf")
-    
-    # Configurar retriever y contenido introductorio
-    knowledge_retriever, intro_content = setup_chatbot(pdf_path)
-    
-    # Obtener tema del documento para saludo personalizado
-    doc_topic = os.path.basename(pdf_path).split('.')[0].replace('_', ' ')
-    print(f"¡Hola! Soy tu asistente experto en {doc_topic}. ¿En qué puedo ayudarte?")
-    
-    while True:
+    memory = sessions[conversation_id]
+    memory.chat_memory.add_user_message(user_input)
+
+    # Mostrar historial actual
+    print("📜 Historial de conversación actual:")
+    for msg in memory.chat_memory.messages:
+        role = "👤 Usuario" if isinstance(msg, HumanMessage) else "🤖 Asistente"
+        print(f"  {role}: {msg.content[:80]}")
+
+    # Revisar si es una pregunta meta
+    meta_keywords = ["sobre qué tienes", "qué sabes", "temas", "información tienes", "de qué trata", "resumen", "alcance"]
+    is_meta = any(kw in user_input.lower() for kw in meta_keywords)
+    print(f"🔍 Es pregunta meta: {is_meta}")
+
+    # Recuperar documentos relevantes y limpiar texto
+    context_docs = retriever.get_relevant_documents(user_input) if not is_meta else []
+    context_chunks = [
+        doc.page_content.strip()[:500] + "..." for doc in context_docs if doc.page_content.strip()
+    ]
+    context = "\n".join(context_chunks)
+    context = context if context and len(context.strip()) > 50 else None
+
+    if context:
+        print(f"📚 Fragmentos contextuales encontrados: {len(context_chunks)}")
+    else:
+        print("⚠️ No se encontró contexto relevante suficiente.")
+
+    # Bloqueo de respuestas fuera del documento
+    if not context and not is_meta:
+        print("⛔ Sin contexto y no es meta → respuesta neutra.")
+        return StreamingResponse(
+            iter([
+                f"data: {json.dumps({'type': 'content', 'content': 'No tengo información sobre eso.'})}\n\n",
+                'data: {"type": "done"}\n\n'
+            ]),
+            media_type="text/event-stream"
+        )
+
+    # Generar mensajes para el modelo
+    messages = generate_prompt_with_history(user_input, context, intro_content, memory)
+    print(f"🧾 Tokens enviados al modelo: {len(messages)} mensajes")
+
+    # Modelo de lenguaje
+    llm = ChatOpenAI(model_name="gpt-4-turbo", temperature=0.2, streaming=True)
+
+    async def stream_response():
+        response_accumulated = ""
         try:
-            user_input = input("\nUsuario: ")
-            if user_input.lower() in ["salir", "exit", "adiós", "bye"]:
-                print("\nChatbot: ¡Hasta luego! Que tengas un buen día.")
-                break
-            
-            # Guardar pregunta en memoria
-            memory.chat_memory.add_user_message(user_input)
-            
-            # Manejar preguntas meta sin buscar en todo el documento
-            if any(keyword in user_input.lower() for keyword in ["sobre qué tienes", "qué sabes", "alcance", "temas", "información tienes"]):
-                context = None
-            else:
-                # Obtener conocimiento relevante para otras preguntas
-                context_docs = knowledge_retriever.get_relevant_documents(user_input)
-                context = "\n".join([doc.page_content[:500] + "..." for doc in context_docs])
-            
-            # Generar prompt con historial
-            messages = generate_prompt_with_history(user_input, context, intro_content)
-            
-            # Generar respuesta usando el modelo
-            llm = ChatOpenAI(model_name="gpt-4-turbo", temperature=0.2)
-            response = llm.invoke(messages)
-            
-            # Guardar respuesta en memoria y mostrar
-            memory.chat_memory.add_ai_message(response.content)
-            print(f"\nChatbot: {response.content}")
-        
-        except KeyboardInterrupt:
-            print("\n\nPrograma terminado por el usuario")
-            break
-        except Exception as e:
-            print(f"\nError: {str(e)}")
+            async for chunk in llm.astream(messages):
+                if chunk.content:
+                    response_accumulated += chunk.content
+                    yield f"data: {json.dumps({'type': 'content', 'content': chunk.content})}\n\n"
 
-if __name__ == "__main__":
-    main()
+            # ✅ Guardar respuesta completa solo una vez
+            if response_accumulated.strip():
+                memory.chat_memory.add_ai_message(response_accumulated)
+
+            yield 'data: {"type": "done"}\n\n'
+        except Exception as e:
+            print(f"❌ Error durante streaming: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+    return StreamingResponse(stream_response(), media_type="text/event-stream")
+@app.get("/debug/chat/{conversation_id}")
+def debug_chat(conversation_id: str):
+    memory = sessions.get(conversation_id)
+    if not memory:
+        return {"status": "not_found", "history": []}
+
+    chat = memory.chat_memory.messages
+    history = []
+    for msg in chat:
+        role = "user" if isinstance(msg, HumanMessage) else "assistant"
+        history.append({ "role": role, "content": msg.content })
+
+    return {
+        "conversation_id": conversation_id,
+        "message_count": len(history),
+        "history": history
+    }

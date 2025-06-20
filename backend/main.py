@@ -1,21 +1,22 @@
 import os
 import json
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
-from backend.utils.chatbot_setup import setup_chatbot, generate_prompt_with_history
+from backend.utils.chatbot_setup import setup_chatbot, generate_prompt_with_history, count_tokens_and_cost
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import HumanMessage
 from langchain_openai import ChatOpenAI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Cargar claves y entorno
+# Carga las variables de entorno desde .env
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# Instancia principal de la aplicación FastAPI
 app = FastAPI()
 
-# Habilitar CORS para desarrollo
+# Configuración de CORS para permitir llamadas desde el frontend local
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -24,17 +25,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Cargar conocimiento al iniciar
+# Inicialización: carga el PDF, genera chunks y embeddings
 pdf_path = os.path.join("backend", "docs", "PB_TravelAbility_DI-v3.pdf")
 retriever, intro_content = setup_chatbot(pdf_path)
 
-# Manejo de sesiones
+# Diccionario de sesiones activas, manejadas en memoria
 sessions = {}  # { conversation_id: ConversationBufferMemory }
 
+# Endpoint de prueba para verificar si el backend está activo
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
+# Endpoint principal que maneja la conversación y devuelve respuestas por SSE
 @app.post("/chat")
 async def chat(request: Request):
     body = await request.json()
@@ -44,7 +47,7 @@ async def chat(request: Request):
     print(f"📨 Petición recibida — conversation_id: {conversation_id}")
     print(f"🗣️ Mensaje del usuario: {user_input}")
 
-    # Saludo directo
+    # Detecta saludos comunes y responde sin invocar el modelo
     if user_input.strip().lower() in ["hola", "buenas", "hey", "hi"]:
         print("👋 Respuesta automática a saludo.")
         return StreamingResponse(
@@ -55,7 +58,7 @@ async def chat(request: Request):
             media_type="text/event-stream"
         )
 
-    # Obtener o crear memoria para esta sesión
+    # Si no existe una sesión, se crea una nueva
     if conversation_id not in sessions:
         print(f"🧠 Nueva sesión creada para: {conversation_id}")
         sessions[conversation_id] = ConversationBufferMemory(
@@ -67,18 +70,18 @@ async def chat(request: Request):
     memory = sessions[conversation_id]
     memory.chat_memory.add_user_message(user_input)
 
-    # Mostrar historial actual
+    # Imprime el historial actual de la conversación para debugging
     print("📜 Historial de conversación actual:")
     for msg in memory.chat_memory.messages:
         role = "👤 Usuario" if isinstance(msg, HumanMessage) else "🤖 Asistente"
         print(f"  {role}: {msg.content[:80]}")
 
-    # Revisar si es una pregunta meta
+    # Detecta si el usuario está pidiendo una descripción general
     meta_keywords = ["sobre qué tienes", "qué sabes", "temas", "información tienes", "de qué trata", "resumen", "alcance"]
     is_meta = any(kw in user_input.lower() for kw in meta_keywords)
     print(f"🔍 Es pregunta meta: {is_meta}")
 
-    # Recuperar documentos relevantes y limpiar texto
+    # Busca los fragmentos relevantes en el índice si no es meta
     context_docs = retriever.get_relevant_documents(user_input) if not is_meta else []
     context_chunks = [
         doc.page_content.strip()[:500] + "..." for doc in context_docs if doc.page_content.strip()
@@ -91,7 +94,7 @@ async def chat(request: Request):
     else:
         print("⚠️ No se encontró contexto relevante suficiente.")
 
-    # Bloqueo de respuestas fuera del documento
+    # Si no hay contexto y no es pregunta meta, se evita llamar al modelo
     if not context and not is_meta:
         print("⛔ Sin contexto y no es meta → respuesta neutra.")
         return StreamingResponse(
@@ -102,13 +105,14 @@ async def chat(request: Request):
             media_type="text/event-stream"
         )
 
-    # Generar mensajes para el modelo
+    # Construcción de mensajes para enviar al modelo, incluyendo contexto e historial
     messages = generate_prompt_with_history(user_input, context, intro_content, memory)
     print(f"🧾 Tokens enviados al modelo: {len(messages)} mensajes")
 
-    # Modelo de lenguaje
+    # Inicializa el modelo con streaming habilitado
     llm = ChatOpenAI(model_name="gpt-4-turbo", temperature=0.2, streaming=True)
 
+    # Generador asincrónico que produce la respuesta por SSE
     async def stream_response():
         response_accumulated = ""
         try:
@@ -117,16 +121,23 @@ async def chat(request: Request):
                     response_accumulated += chunk.content
                     yield f"data: {json.dumps({'type': 'content', 'content': chunk.content})}\n\n"
 
-            # ✅ Guardar respuesta completa solo una vez
+            # Guarda la respuesta completa en la memoria de la conversación
             if response_accumulated.strip():
                 memory.chat_memory.add_ai_message(response_accumulated)
 
+                # Calcula y envía el uso de tokens y el costo estimado
+                usage_info = count_tokens_and_cost(messages, model="gpt-4-turbo")
+                yield f"data: {json.dumps({'type': 'usage', 'tokens': usage_info})}\n\n"
+
             yield 'data: {"type": "done"}\n\n'
+
         except Exception as e:
             print(f"❌ Error durante streaming: {e}")
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
     return StreamingResponse(stream_response(), media_type="text/event-stream")
+
+# Endpoint para depurar una sesión individual y obtener el historial completo
 @app.get("/debug/chat/{conversation_id}")
 def debug_chat(conversation_id: str):
     memory = sessions.get(conversation_id)
@@ -144,3 +155,31 @@ def debug_chat(conversation_id: str):
         "message_count": len(history),
         "history": history
     }
+
+# Endpoint para listar todas las sesiones activas con su historial
+@app.get("/debug/conversations")
+def list_all_conversations():
+    all_histories = []
+    for conv_id, memory in sessions.items():
+        chat = memory.chat_memory.messages
+        history = []
+        for msg in chat:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            history.append({ "role": role, "content": msg.content })
+
+        all_histories.append({
+            "conversation_id": conv_id,
+            "message_count": len(history),
+            "history": history
+        })
+
+    return {"conversations": all_histories}
+
+# Endpoint para eliminar una sesión específica
+@app.delete("/debug/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str):
+    if conversation_id in sessions:
+        del sessions[conversation_id]
+        print(f"🗑️ Conversación '{conversation_id}' eliminada del backend.")
+        return {"status": "deleted"}
+    raise HTTPException(status_code=404, detail="Conversación no encontrada")

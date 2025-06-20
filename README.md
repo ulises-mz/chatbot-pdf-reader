@@ -1,6 +1,12 @@
-# Chatbot PDF Reader
+# Chatbot PDF Reader (React + FastAPI)
 
 Una aplicación web que responde preguntas basadas en el contenido de un archivo PDF usando OpenAI y FastAPI.
+
+---
+
+## 🖼 Vista previa de la interfaz
+
+![Vista previa de la app](Preview.png)
 
 ---
 
@@ -11,6 +17,16 @@ Una aplicación web que responde preguntas basadas en el contenido de un archivo
 - ⏱️ Streaming de respuestas en tiempo real (SSE)
 - 📊 Cálculo de tokens y costo estimado por mensaje
 - 📎 Exportación a Markdown
+- 🧾 Markdown rendering para respuestas AI
+
+---
+
+## 🧪 Endpoints útiles
+
+- `GET /health` – Verifica que el backend esté funcionando
+- `POST /chat` – Enviar mensaje y obtener respuesta
+- `GET /debug/chat/{conversation_id}` – Ver historial de conversación
+- `DELETE /debug/conversations/{conversation_id}` – Eliminar sesión
 
 ---
 
@@ -68,16 +84,7 @@ Esto abrirá la app en [http://localhost:3000](http://localhost:3000)
 
 ---
 
-## 🧪 Endpoints útiles
-
-- `GET /health` – Health check
-- `POST /chat` – Enviar mensaje y obtener respuesta
-- `GET /debug/chat/{conversation_id}` – Ver historial de una conversación
-- `DELETE /debug/conversations/{conversation_id}` – Eliminar sesión
-
----
-
-## 🔐 Variables de entorno (`.env.example`)
+## 🔐 Variables de entorno
 
 ### Backend `.env.example`
 
@@ -86,7 +93,7 @@ OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 PDF_PATH=backend/docs/PB_TravelAbility_DI-v3.pdf
 ```
 
-### Frontend `.env.example` (opcional, si usas variables para configurar la URL del backend)
+### Frontend `.env.example` (opcional)
 
 ```env
 REACT_APP_API_URL=http://localhost:8000
@@ -94,7 +101,7 @@ REACT_APP_API_URL=http://localhost:8000
 
 ---
 
-## 📦 Instalación de dependencias
+## 📦 Dependencias principales
 
 ### Backend `requirements.txt`
 
@@ -113,7 +120,7 @@ faiss-cpu
 numpy
 ```
 
-### Frontend `package.json` (fragmento)
+### Frontend `package.json`
 
 ```json
 "dependencies": {
@@ -129,17 +136,18 @@ numpy
 
 ## 📝 Notas
 
-- El archivo PDF se carga al iniciar el backend, no es necesario subirlo manualmente.
-- El chatbot **solo responderá preguntas relacionadas al contenido del PDF**.
-- Las respuestas usan **Markdown** para mejorar el formato y legibilidad.
+- El archivo PDF se carga al iniciar el backend.
+- El chatbot **solo responde preguntas relacionadas con el contenido del PDF**.
+- Las respuestas usan **formato Markdown** para mayor legibilidad.
+- La memoria de conversación se maneja en memoria (sin base de datos).
 
 ---
 
 ## ✅ Estado del proyecto
 
 ✅ Funcional en local  
-✅ Compatible con despliegue en VPS o servicios como Render  
-✅ Modular y listo para mejoras
+✅ Compatible con VPS o Render  
+✅ Modular y extensible
 
 ---
 

@@ -124,17 +124,29 @@ numpy
 
 ```json
 "dependencies": {
-  "axios": "^1.6.0",
-  "react": "^18.2.0",
-  "react-dom": "^18.2.0",
-  "react-markdown": "^9.0.0",
-  "react-scripts": "5.0.1"
+  "@testing-library/dom": "^10.4.0",
+  "@testing-library/jest-dom": "^6.6.3",
+  "@testing-library/react": "^16.3.0",
+  "@testing-library/user-event": "^13.5.0",
+  "react": "^19.1.0",
+  "react-dom": "^19.1.0",
+  "react-icons": "^5.5.0",
+  "react-markdown": "^10.1.0",
+  "react-scripts": "5.0.1",
+  "web-vitals": "^2.1.4"
+},
+"devDependencies": {
+  "autoprefixer": "^10.4.21",
+  "postcss": "^8.5.6",
+  "tailwindcss": "^4.1.10"
 }
 ```
 
 ---
 
 ## 📝 Notas
+
+- Para cambiar el archivo PDF de contexto, reemplaza el documento ubicado en `backend/docs`.
 
 - El archivo PDF se carga al iniciar el backend.
 - El chatbot **solo responde preguntas relacionadas con el contenido del PDF**.
